@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const WS_URL = `ws://${window.location.hostname}:8000/ws/game`;
@@ -41,6 +40,7 @@ export default function App() {
 
   const wsRef = useRef(null);
   const boardWrapRef = useRef(null);
+
   const dragRef = useRef({
     active: false,
     startX: 0,
@@ -48,6 +48,8 @@ export default function App() {
     startOffsetX: 0,
     startOffsetY: 0,
   });
+
+  const wasDraggedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -62,6 +64,7 @@ export default function App() {
       if (!boardWrapRef.current) return;
 
       const rect = boardWrapRef.current.getBoundingClientRect();
+
       setViewport({
         width: rect.width,
         height: rect.height,
@@ -84,6 +87,11 @@ export default function App() {
 
       const deltaX = e.clientX - dragRef.current.startX;
       const deltaY = e.clientY - dragRef.current.startY;
+
+      if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+        wasDraggedRef.current = true;
+      }
+
       const step = cellSize + CELL_GAP;
 
       const shiftX = Math.round(deltaX / step);
@@ -119,6 +127,7 @@ export default function App() {
 
     ws.onopen = () => {
       setStatus("Подключено");
+
       ws.send(
         JSON.stringify({
           type: "join",
@@ -157,12 +166,19 @@ export default function App() {
   }
 
   function handleCellClick(x, y) {
+    if (wasDraggedRef.current) {
+      wasDraggedRef.current = false;
+      return;
+    }
+
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (!gameState || gameState.finished || !gameState.started) return;
+    if (!myPlayer) return;
 
     wsRef.current.send(
       JSON.stringify({
         type: "make_move",
+        player_id: myPlayer.id,
         x,
         y,
       })
@@ -189,6 +205,7 @@ export default function App() {
 
   function handleWheel(e) {
     if (!e.ctrlKey && !e.metaKey) return;
+
     e.preventDefault();
 
     setCellSize((prev) => {
@@ -198,6 +215,8 @@ export default function App() {
   }
 
   function handleMouseDown(e) {
+    wasDraggedRef.current = false;
+
     dragRef.current = {
       active: true,
       startX: e.clientX,
@@ -226,12 +245,12 @@ export default function App() {
   const players = gameState?.players || [];
   const boardMap = gameState?.board || {};
   const lastMove = gameState?.last_move || null;
-  const maxCoord = gameState?.max_coord ?? 99999999;
+  const maxCoord = gameState?.max_coord ?? 999999;
 
   const isMyTurn =
     gameState &&
     myPlayer &&
-    gameState.current_turn === myPlayer.symbol &&
+    gameState.current_turn_id === myPlayer.id &&
     !gameState.finished &&
     gameState.started;
 
@@ -282,6 +301,7 @@ export default function App() {
     }
 
     setError("");
+
     setOffsetX(x - Math.floor(visibleCols / 2));
     setOffsetY(y - Math.floor(visibleRows / 2));
   }
@@ -295,6 +315,7 @@ export default function App() {
 
   function renderCell(cell) {
     const isFilled = !!cell.symbol;
+
     const isLastMove =
       lastMove && lastMove.x === cell.x && lastMove.y === cell.y;
 
@@ -308,7 +329,9 @@ export default function App() {
         style={{
           width: `${cellSize}px`,
           height: `${cellSize}px`,
-          color: cell.symbol ? SYMBOL_COLORS[cell.symbol] || "#ffffff" : "#ffffff",
+          color: cell.symbol
+            ? SYMBOL_COLORS[cell.symbol] || "#ffffff"
+            : "#ffffff",
         }}
       >
         <span className="cell-symbol">{cell.symbol || ""}</span>
@@ -324,6 +347,7 @@ export default function App() {
         {!joined ? (
           <div className="card">
             <h2>Вход в игру</h2>
+
             <input
               type="text"
               placeholder="Введите имя"
@@ -331,9 +355,12 @@ export default function App() {
               onChange={(e) => setName(e.target.value)}
               maxLength={20}
             />
+
             <button onClick={connectToGame}>Подключиться</button>
+
             <p className="status">{status}</p>
             <p className="status">WS: {WS_URL}</p>
+
             {error && <p className="error">{error}</p>}
           </div>
         ) : (
@@ -341,9 +368,11 @@ export default function App() {
             <div className="top-panel">
               <div className="card small">
                 <h3>Ты</h3>
+
                 <p>
                   <strong>{myPlayer?.name}</strong>
                 </p>
+
                 <p>
                   Символ:{" "}
                   <span
@@ -360,6 +389,7 @@ export default function App() {
 
               <div className="card small">
                 <h3>Статус игры</h3>
+
                 {!gameState?.started ? (
                   <p>Ожидание всех игроков: {players.length}/4</p>
                 ) : gameState?.finished ? (
@@ -383,7 +413,8 @@ export default function App() {
                     Сейчас ход: <strong>{gameState?.current_turn_name}</strong>{" "}
                     <span
                       style={{
-                        color: SYMBOL_COLORS[gameState?.current_turn] || "#ffffff",
+                        color:
+                          SYMBOL_COLORS[gameState?.current_turn] || "#ffffff",
                         fontWeight: 800,
                       }}
                     >
@@ -391,10 +422,13 @@ export default function App() {
                     </span>
                   </p>
                 )}
+
+                {isMyTurn && <p className="your-turn">Ваш ход</p>}
               </div>
 
               <div className="card small">
                 <h3>Игроки</h3>
+
                 {players.length === 0 ? (
                   <p>Нет игроков</p>
                 ) : (
@@ -410,7 +444,8 @@ export default function App() {
                         >
                           {player.symbol}
                         </span>
-                        {gameState?.current_turn === player.symbol &&
+
+                        {gameState?.current_turn_id === player.id &&
                         !gameState?.finished
                           ? " ← ход"
                           : ""}
@@ -426,40 +461,50 @@ export default function App() {
             <div className="toolbar">
               <div className="card small">
                 <h3>Перемещение</h3>
+
                 <div className="nav-grid">
                   <button onClick={moveUp}>↑</button>
+
                   <div className="nav-row">
                     <button onClick={moveLeft}>←</button>
                     <button onClick={moveRight}>→</button>
                   </div>
+
                   <button onClick={moveDown}>↓</button>
                 </div>
               </div>
 
               <div className="card small">
                 <h3>Масштаб</h3>
+
                 <div className="zoom-row">
                   <button onClick={zoomOut}>−</button>
                   <span className="zoom-value">{cellSize}px</span>
                   <button onClick={zoomIn}>+</button>
                 </div>
+
+                <p className="hint">Ctrl + колесо мыши</p>
               </div>
 
               <div className="card small">
                 <h3>Переход к координатам</h3>
+
                 <input
                   type="number"
                   value={jumpX}
                   onChange={(e) => setJumpX(e.target.value)}
                   placeholder="X"
                 />
+
                 <input
                   type="number"
                   value={jumpY}
                   onChange={(e) => setJumpY(e.target.value)}
                   placeholder="Y"
                 />
+
                 <button onClick={goToCoords}>Перейти</button>
+
                 <button onClick={centerOnLastMove} style={{ marginTop: 10 }}>
                   К последнему ходу
                 </button>
@@ -468,9 +513,17 @@ export default function App() {
 
             <div className="card small" style={{ marginBottom: 20 }}>
               <h3>Область</h3>
-              <p>X: {offsetX} ... {offsetX + visibleCols - 1}</p>
-              <p>Y: {offsetY} ... {offsetY + visibleRows - 1}</p>
+
+              <p>
+                X: {offsetX} ... {offsetX + visibleCols - 1}
+              </p>
+
+              <p>
+                Y: {offsetY} ... {offsetY + visibleRows - 1}
+              </p>
+
               <p>Лимит координат: ±{maxCoord}</p>
+              <p>Сделано ходов: {gameState?.moves_count ?? 0}</p>
             </div>
 
             <div
@@ -498,6 +551,7 @@ export default function App() {
             {gameState?.ranking?.length > 0 && (
               <div className="card ranking">
                 <h3>Рейтинг</h3>
+
                 <ul>
                   {gameState.ranking.map((item, index) => (
                     <li key={index}>
@@ -521,4 +575,3 @@ export default function App() {
     </div>
   );
 }
-

@@ -3,7 +3,13 @@ from uuid import uuid4
 
 WIN_LENGTH = 5
 MAX_PLAYERS = 4
-MAX_COORD = 99_999_999
+
+# Если нужно поле до ±999999, оставь так:
+MAX_COORD = 999_999
+
+# Если нужно до ±99 999 999, поставь так:
+# MAX_COORD = 99_999_999
+
 SYMBOLS = ["X", "O", "▽", "●"]
 
 
@@ -51,6 +57,7 @@ class GameRoom:
 
     def get_current_player(self) -> Optional["Player"]:
         active_players = self.get_active_players()
+
         if not active_players:
             return None
 
@@ -60,11 +67,14 @@ class GameRoom:
         return active_players[self.current_turn_index]
 
     def add_player(self, websocket, name: str) -> Optional["Player"]:
-        if len(self.get_active_players()) >= MAX_PLAYERS:
+        active_players = self.get_active_players()
+
+        if len(active_players) >= MAX_PLAYERS:
             return None
 
-        used_symbols = [p.symbol for p in self.get_active_players()]
+        used_symbols = [p.symbol for p in active_players]
         available_symbol = next((s for s in SYMBOLS if s not in used_symbols), None)
+
         if available_symbol is None:
             return None
 
@@ -92,7 +102,14 @@ class GameRoom:
 
         if len(active_players) == 0:
             self.players = []
-            self.reset_game()
+            self.board = {}
+            self.current_turn_index = 0
+            self.started = False
+            self.finished = False
+            self.winner = None
+            self.winner_name = None
+            self.ranking = []
+            self.last_move = None
             return
 
         if len(active_players) < MAX_PLAYERS:
@@ -112,6 +129,18 @@ class GameRoom:
     def get_cell(self, x: int, y: int) -> Optional[str]:
         return self.board.get(self.cell_key(x, y))
 
+    def validate_coordinates(self, x: int, y: int):
+        if not isinstance(x, int) or not isinstance(y, int):
+            return False, "x и y должны быть целыми числами"
+
+        if isinstance(x, bool) or isinstance(y, bool):
+            return False, "x и y должны быть целыми числами"
+
+        if abs(x) > MAX_COORD or abs(y) > MAX_COORD:
+            return False, f"Координаты должны быть от -{MAX_COORD} до {MAX_COORD}"
+
+        return True, None
+
     def make_move(self, player_id: str, x: int, y: int):
         if self.finished:
             return False, "Игра уже завершена"
@@ -120,12 +149,14 @@ class GameRoom:
             return False, "Игра начинается только когда подключены 4 игрока"
 
         if len(self.get_active_players()) != MAX_PLAYERS:
-            return False, "Недостаточно игроков для начала игры"
+            return False, "Недостаточно игроков для игры"
 
-        if abs(x) > MAX_COORD or abs(y) > MAX_COORD:
-            return False, f"Координаты должны быть в диапазоне от -{MAX_COORD} до {MAX_COORD}"
+        valid, error = self.validate_coordinates(x, y)
+        if not valid:
+            return False, error
 
         current_player = self.get_current_player()
+
         if current_player is None:
             return False, "Нет активного игрока"
 
@@ -138,7 +169,13 @@ class GameRoom:
             return False, "Клетка уже занята"
 
         self.board[key] = current_player.symbol
-        self.last_move = {"x": x, "y": y, "symbol": current_player.symbol}
+
+        self.last_move = {
+            "x": x,
+            "y": y,
+            "symbol": current_player.symbol,
+            "player_name": current_player.name,
+        }
 
         if self.check_winner(x, y, current_player.symbol):
             self.finished = True
@@ -152,8 +189,10 @@ class GameRoom:
 
     def advance_turn(self):
         active_players = self.get_active_players()
+
         if not active_players:
             return
+
         self.current_turn_index = (self.current_turn_index + 1) % len(active_players)
 
     def check_winner(self, x: int, y: int, symbol: str) -> bool:
@@ -168,6 +207,7 @@ class GameRoom:
             count = 1
             count += self.count_in_direction(x, y, dx, dy, symbol)
             count += self.count_in_direction(x, y, -dx, -dy, symbol)
+
             if count >= WIN_LENGTH:
                 return True
 
@@ -175,7 +215,8 @@ class GameRoom:
 
     def count_in_direction(self, x: int, y: int, dx: int, dy: int, symbol: str) -> int:
         count = 0
-        cx, cy = x + dx, y + dy
+        cx = x + dx
+        cy = y + dy
 
         while self.get_cell(cx, cy) == symbol:
             count += 1
@@ -186,6 +227,7 @@ class GameRoom:
 
     def build_ranking(self, winner: "Player"):
         active_players = self.get_active_players()
+
         self.ranking = [
             {
                 "place": 1,
@@ -195,6 +237,7 @@ class GameRoom:
         ]
 
         others = [p for p in active_players if p.id != winner.id]
+
         for index, player in enumerate(others, start=2):
             self.ranking.append(
                 {
@@ -204,19 +247,9 @@ class GameRoom:
                 }
             )
 
-    def build_draw_ranking(self):
-        active_players = self.get_active_players()
-        self.ranking = [
-            {
-                "place": None,
-                "name": p.name,
-                "symbol": p.symbol,
-            }
-            for p in active_players
-        ]
-
     def get_state(self):
         current_player = self.get_current_player()
+
         return {
             "type": "state",
             "board": self.board,
@@ -226,9 +259,11 @@ class GameRoom:
             "winner": self.winner,
             "winner_name": self.winner_name,
             "current_turn": current_player.symbol if current_player else None,
+            "current_turn_id": current_player.id if current_player else None,
             "current_turn_name": current_player.name if current_player else None,
             "ranking": self.ranking,
             "win_length": WIN_LENGTH,
             "last_move": self.last_move,
             "max_coord": MAX_COORD,
+            "moves_count": len(self.board),
         }

@@ -1,9 +1,10 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import json
 
 from game import GameRoom
-MAX_COORD = 99_999_999
+
 app = FastAPI()
 
 app.add_middleware(
@@ -15,10 +16,10 @@ app.add_middleware(
 )
 
 room = GameRoom()
+room_lock = asyncio.Lock()
 
 
 async def send_error(websocket: WebSocket, message: str):
-    print("SEND ERROR:", message)
     await websocket.send_text(
         json.dumps(
             {
@@ -34,38 +35,43 @@ async def broadcast_state():
     state = room.get_state()
     disconnected = []
 
-    print("BROADCAST STATE:", state)
-
     for player in room.players:
         if not player.connected:
             continue
+
         try:
             await player.websocket.send_text(json.dumps(state, ensure_ascii=False))
-        except Exception as e:
-            print("BROADCAST FAILED:", e)
+        except Exception:
             disconnected.append(player.websocket)
 
-    for ws in disconnected:
-        room.remove_player(ws)
+    if disconnected:
+        async with room_lock:
+            for ws in disconnected:
+                room.remove_player(ws)
 
 
 @app.get("/")
 async def root():
-    return {"message": "Four-player Tic-Tac-Toe backend is running"}
+    return {
+        "message": "Infinity Grid backend is running",
+    }
 
 
 @app.websocket("/ws/game")
 async def websocket_endpoint(websocket: WebSocket):
-    print("WS: incoming connection")
     await websocket.accept()
-    print("WS: accepted")
+
     current_player = None
 
     try:
         join_raw = await websocket.receive_text()
-        print("WS FIRST MESSAGE:", join_raw)
 
-        join_data = json.loads(join_raw)
+        try:
+            join_data = json.loads(join_raw)
+        except json.JSONDecodeError:
+            await send_error(websocket, "Некорректный JSON")
+            await websocket.close()
+            return
 
         if join_data.get("type") != "join":
             await send_error(websocket, "Первое сообщение должно быть типа join")
@@ -73,7 +79,6 @@ async def websocket_endpoint(websocket: WebSocket):
             return
 
         name = str(join_data.get("name", "")).strip()
-        print("WS PLAYER NAME:", name)
 
         if not name:
             await send_error(websocket, "Имя игрока обязательно")
@@ -85,14 +90,15 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close()
             return
 
-        player = room.add_player(websocket, name)
+        async with room_lock:
+            player = room.add_player(websocket, name)
+
         if player is None:
             await send_error(websocket, "Комната заполнена")
             await websocket.close()
             return
 
         current_player = player
-        print("WS PLAYER JOINED:", player.name, player.symbol)
 
         await websocket.send_text(
             json.dumps(
@@ -108,21 +114,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
         while True:
             raw_message = await websocket.receive_text()
-            print("WS MESSAGE:", raw_message)
 
-            data = json.loads(raw_message)
+            try:
+                data = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await send_error(websocket, "Некорректный JSON")
+                continue
+
             message_type = data.get("type")
 
             if message_type == "make_move":
                 x = data.get("x")
                 y = data.get("y")
+                player_id = data.get("player_id")
 
-                if not isinstance(x, int) or not isinstance(y, int):
-                    await send_error(websocket, "x и y должны быть числами")
+                if player_id != current_player.id:
+                    await send_error(websocket, "Некорректный id игрока")
                     continue
 
-                success, message = room.make_move(player.id, x, y)
-                print("MOVE RESULT:", success, message)
+                async with room_lock:
+                    success, message = room.make_move(current_player.id, x, y)
 
                 if not success:
                     await send_error(websocket, message)
@@ -130,24 +141,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 await broadcast_state()
 
             elif message_type == "restart":
-                print("RESTART GAME")
-                room.reset_game()
+                async with room_lock:
+                    room.reset_game()
+
                 await broadcast_state()
 
             else:
                 await send_error(websocket, "Неизвестный тип сообщения")
 
     except WebSocketDisconnect:
-        print("WS DISCONNECT")
         if current_player is not None:
-            room.remove_player(websocket)
+            async with room_lock:
+                room.remove_player(websocket)
+
             await broadcast_state()
 
     except Exception as e:
-        print("WS EXCEPTION:", repr(e))
         if current_player is not None:
-            room.remove_player(websocket)
+            async with room_lock:
+                room.remove_player(websocket)
+
             await broadcast_state()
+
         try:
             await send_error(websocket, f"Ошибка сервера: {str(e)}")
         except Exception:
